@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="english">
+<head>
+            <title>A dialogue system for a Source engine mod - itmdt.org</title>
+        <link rel="stylesheet" type="text/css" href="http://itmdt.org/theme/style.css" />
+        <meta charset="utf-8" />
+        <link href="http://itmdt.org/atom.xml" type="application/atom+xml" rel="alternate" title="itmdt.org Atom Feed" />
+
+
+
+</head>
+
+<body>
+        <header id="banner">
+                <h2 class="site-title">itmdt.org</h2>
+                <span class="site-subtitle">Victor Vergara's blog.</span>
+                <a href="http://itmdt.org">Home</a>
+                <a href="https://github.com/itmdt">GitHub</a>
+        </header>
+    <section id="content">
+        <header>
+            <time class="published" datetime="2017-06-26T16:10:46-07:00">Jun. 26, 2017</time>
+            <h1 class="entry-title">A dialogue system for a Source engine mod</h1>
+            
+        </header>
+        <div class="entry-content">
+            <iframe class="youtube" type="text/html" width="800" height="450" src="https://www.youtube.com/embed/td2hXMTHgvs" frameborder="0"></iframe>
+
+<p>Back in 2013 I was working on a Half-Life 2 mod with a couple of other people. The mod was to be a four player cooperative game with a narrative. Each level would have a set of objectives, some optional, and there would be a freedom of approach as to the order they could be completed in, kind of like Deus Ex or if Skyrim took place in a series of smaller open environments instead of one big one. A dialogue system was one of the first things I decided to prototype, as it would allow us to start putting in a rough narrative as we started doing level design. It ended up being pretty solid and is easy to present, so I've decided to put together a write-up on how it worked. </p>
+<p>The functionality of the dialogue system took a lot of inspiration from games like Mass Effect or Fallout 3. The way a dialogue works in these games is fairly simple: you approach a character, press the "interact" key, the character speaks a line, and then you're presented with a list of responses to choose from. When you pick a response, the character speaks another line in reply, and this process repeats until you choose a response that doesn't lead to more response options. It's possible to think of the structure of a dialogue that follows this pattern as a directed graph: each character reply is a node, and each player response represents an edge to another node. The starting reply/node is arbitrarily chosen. The graph representation is a loose analogy but it helped with keeping a clear picture in my head and also with choosing suggestive names for variables.</p>
+<p>Beyond the basic functionality, there were a few additional requirements and ideas we had. The Source engine has a really cool choreography and facial animation system, which I thought would be great to be able to utilize for dialogues, so that rather than having a character that just stares at you blankly while text replies show up on screen, the character could actually speak and act out the replies. It would also have potential for dialogues with multiple non-player characters at once. I had to figure out how to interface with that system and how to make it easy for a level designer to use. Dialogue responses also had to be able to trigger events in the level, like unlocking doors or spawning objects. There were also plans for choices to show if the player was at a certain level of progress in a quest or had specific items in their inventory, but neither the quest tracking or inventory systems were ultimately fully implemented.</p>
+<p>At the time I was inexperienced in writing C++ on larger scales. The code base given for Half-Life 2 mods to start from is pretty sprawling and uses a client/server architecture where a large amount of the codebase is used in both the client and server binaries. For shared source files this means frequent <code>#IFDEF CLIENT_DLL</code> or <code>SERVER_DLL</code> blocks of code that only apply to one or the other side, and lots of initially mysterious client-server communication macros. Also, some practices in the codebase date back to the original Quake (which the Source engine is derived from), and sometimes things are written in a suspiciously C-like way. When I first started trying to write parts of the dialogue system in, there was a lot of second-guessing as to where things should go, and if there were more conventional and/or just better ways of doing things that I hadn't noticed. The various components of the system came together slowly, sort of in parallel. I would get far enough in one thing to realize that I needed to add something to the other thing.</p>
+<p>Anyway, the plan was to extend <code>BaseActor</code>, the base class for non-player characters that can participate in choreography, to store dialogue data, create a link between a player character and itself upon being interacted with, and also facilitate stepping through the dialogue. There are a fair amount of classes derived from the base actor class; hypothetically, you could create a dialogue with an inanimate prop. Some additional work needed to be done to the player class to receive data from the actor and send some back, and of course a UI element needed to be created to control the dialogue.</p>
+<p>When an actor that has a dialogue script file specified is interacted with, it will play the choreography scene associated with its starting node, then if there are response options to be presented to the player, they will be sent from the server to the player's client, where a UI element will be populated with the options and shown. The chosen response will then be sent back to the server from the client. The client's response is processed and acted upon by the character the moment that the server receives the player's choice. The dialogue will terminate and free the player once the actor plays a node that will not present any response options to the player. The state of the dialogue is managed exclusively by the server in the actor class instance; the only thing that the client does is receive dialogue options and send a response number back.</p>
+<p>The first obstacle in implementation was figuring out how the data for the dialogues should be stored and interpreted. The Source engine uses an internal format called KeyValues for its various configuration and script files. It's rudimentary, but still more than enough for the purposes of the dialogue system, and all the parsing code is already there. KeyValues looks vaguely like JSON:</p>
+<div class="codehilite"><pre><span></span>CharacterDialogue
+{
+    FullName &quot;John Edmond&quot;
+    EntryNode &quot;initial_greet&quot;
+    &quot;initial_greet&quot;
+    {
+        Scene &quot;scenes/sdk_campaign/john_greeting.vcd&quot;
+        OnCompletion
+        {
+            &quot;brief&quot; &quot;#john_choices.brief&quot; // &lt;node name&gt; &lt;choice display text&gt;
+            &quot;leave&quot; &quot;#john_choices.leave&quot;
+            &quot;insult&quot; &quot;#john_choices.insult&quot;
+        }
+    }
+    &quot;leave&quot;
+    {
+        Text &quot;#john_text.leave&quot;
+    }
+    &quot;brief&quot;
+    {
+        Scene &quot;scenes/sdk_campaign/john_lostcat.vcd&quot;
+        OnCompletion
+        {
+            &quot;accept_sidequest&quot; &quot;#john_choices.accept_sidequest&quot;
+            &quot;deny_sidequest&quot; &quot;#john_choices.deny_sidequest&quot;
+        }
+    }
+    &quot;accept_sidequest&quot; // no quest-tracking functionality at this point
+    {
+        Text &quot;#john_text.accept_sidequest&quot;
+    }
+    &quot;deny_sidequest&quot;
+    {
+        Scene &quot;scenes/sdk_campaign/john_needhelp.vcd&quot;
+    }
+    &quot;cat_return&quot;
+    {
+        Scene &quot;scenes/sdk_campaign/john_thanks.vcd&quot;
+        SetEntryNode &quot;post_cat_return&quot;
+        Target1 &quot;doorbutton_target&quot;
+        OnTrigger1
+        {
+            Trigger
+            {
+                &quot;relay_opendoor&quot; &quot;Trigger&quot; // &lt;entity name&gt; &lt;input to fire&gt;
+            }
+        }
+    }
+    &quot;post_cat_return&quot;
+    {
+        Scene &quot;scenes/sdk_campaign/john_thanksagain.vcd&quot;
+    }
+    &quot;insult&quot;
+    {
+        Scene &quot;scenes/sdk_campaign/john_wat.vcd&quot;
+        SetEntryNode &quot;insulted&quot;
+        OnCompletion
+        {
+            GoTo &quot;nevermind&quot;
+        }
+    }
+    &quot;nevermind&quot;
+    {
+        Scene &quot;scenes/sdk_campaign/john_mad.vcd&quot;
+    }
+    &quot;insulted&quot;
+    {
+        Scene &quot;scenes/sdk_campaign/john_refuse.vcd&quot;
+    }
+}
+</pre></div>
+
+
+<p>From this example script (used for the first character in the linked video) you can get a rough idea of how the scripts are structured. The first level is just an enveloping block. On the second level there are a few keys that are specifically searched for, such as <code>EntryNode</code> (whose value specifies the default starting node), and then any other names are treated as names for character reply nodes. In a reply node, besides some self-explanatory fields, there are "event blocks," which are where it's possible to trigger events in the map. There are various kinds of event blocks depending on when the associated actions should be executed: as the choreography scene begins to be played, when it finishes, when it gets canceled (player or character death, for example), as well as any of sixteen arbitrarily scheduled events that can be defined in the choreography manually. Response options to show to the player are only searched for in <code>OnCompletion</code> blocks. Strings that start with a pound sign are localization tokens that get searched for in language-specific text files.</p>
+<p>Putting together the script format was a gradual process and not something that was conceived in full and then implemented, and in retrospect there are a few things I see now that could be simpler or should otherwise be done differently. Furthermore, there was very little effort put into validating these script files. They were intended to ultimately be able to be written by players for their own custom narratives, and looking at the above script while writing this, I'm not sure what would happen if certain things were missing or malformed, or what those cases would look like to someone who would have to debug it. One of the team members was working on a GUI utility for writing dialogue script files, and with some graph visualization and cross-referencing with map source files, it would likely help prevent many typo-caused errors and things like redundant or circular paths.</p>
+<p>The other obstacle in putting the system together was exposing the choreography system to the dialogue script. The usual method to put a choreographed scene in a map involves placing a logical entity somewhere that stores various bits of necessary information (like the file name of the scene to play), and then having a separate entity start the playback of the scene when appropriate. The obvious move was to just create an instance of one of these logical entities from the code every time a scene was to be played and set up the properties according to the dialogue script data and make it play. The entity's code consisted of a single .cpp file, which meant the entity's class wasn't readily exposed to other code. I thought there must have been a reason for this, but as far as I can tell, there wasn't. I moved declarations over to a new header file and didn't run into any problems.</p>
+<p>I waited until this point to actually try to get it all working together in game, which luckily didn't turn out to be a huge mistake; I was really fixated on making sure it was possible to rig up the choreography system, because it didn't feel like dialogues were going to be interesting enough without it. I whipped up a simple UI to show the dialogue choices to test it out. The UI element that gets populated on the client is very simple, as you can see in the video. The UI system in Source, VGUI, is not a lot of fun to work with, and at the time I just wanted to get it working as quickly as possible, so what you see is just a rigged up drop-down menu that won't go away when you click outside of it. There were still edge cases that made it vanish, leaving the player unable to move (it could be exited with a console command), but they were rare enough that I decided to leave it so I could move on.</p>
+<p>I wrote a dumb test dialogue and got one of the team members to record lines for it, and ran it through Faceposer to get the character's mouth moving accurately and also have him emote a little. Initially, the dialogue system hardly worked. There were a lot of embarrassing mistakes like incorrectly passing strings around or misunderstanding how things were cached that caused the game to crash or kept sounds from playing. Eventually things started showing up in the UI, and I could step through the dialogue choices. Once choreography scene precaching was hooked up and the character acted out its lines, it felt like the whole system had suddenly clicked into place. There were still rough edges; weird things like not being able to have a character look into your eyes (a result of the choreography system not being designed for multiplayer), or not having some important features exposed to the script format, but these were mostly all trivial fixes.</p>
+<p>Something I overlooked until I had gotten all that working was the multiplayer side of the dialogues. A second player would have a very limited experience of the dialogue, especially since having the player audibly speak lines wasn't part of the plan at any point. The player engaged in the dialogue might have to stop to explain what just happened to everybody else. Once I realized this, I put extra work in making it so both sides of the dialogue would be printed in the in-game text chat. It didn't feel like a good solution, since people often miss or ignore on-screen text. Having the players speak lines would probably have been the most immediately understandable solution, but having on-screen text felt like a good enough stopgap solution while I continued prototyping the other systems for the game.</p>
+<p>Before development stopped on the mod there were some issues of uncertain resolvability with the dialogue system, involving engine-level functionality that we didn't have complete access to from the mod code (file caching related), and also the choreography tool was and still is at some level of disrepair, making animation of the characters extra time-consuming.</p>
+<p>The mod never got off the ground in any meaningful way. The dialogue system was just one of a number of big systems that were planned and mostly designed. I was the only programmer touching the game code. We were all students and had other responsibilities of varying degrees, and our plans were far too time-consuming for just us. It was especially "not worth it" since Source mods officially couldn't be sold, and indie development had been making real money for years at that point. At the very least, it let me have the experience of taking a few things from concept to reality in a "serious" codebase.</p>
+        </div>
+    </section>
+    <footer>
+        <a href="http://itmdt.org">Back to index</a>
+    </footer>
+</body>
+</html>
